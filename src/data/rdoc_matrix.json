@@ -1,0 +1,129 @@
+{
+    "Negative_Valence_Systems": {
+        "Acute_Threat_Fear": {
+            "molecules": [
+                "BDNF",
+                "CCK",
+                "Cortisol",
+                "CRH",
+                "Dopamine",
+                "GABA",
+                "Glutamate",
+                "Serotonin"
+            ],
+            "cells": [
+                "GABAergic cells",
+                "Glia",
+                "Neurons",
+                "Pyramidal cells"
+            ],
+            "circuits": [
+                "Amygdala",
+                "Hippocampus",
+                "Prefrontal cortex",
+                "ACC"
+            ],
+            "behavior": [
+                "Avoidance",
+                "Freezing",
+                "Startle response",
+                "Anxiety"
+            ],
+            "self_report": [
+                "Fear Survey Schedule",
+                "SUDS",
+                "Anxiety scales"
+            ],
+            "paradigms": [
+                "Fear conditioning",
+                "Behavioral inhibition",
+                "Threat exposure"
+            ]
+        }
+    },
+    "Positive_Valence_Systems": {
+        "Reward_Learning": {
+            "molecules": [
+                "Dopamine",
+                "Serotonin",
+                "Glutamate",
+                "Endocannabinoids"
+            ],
+            "circuits": [
+                "Nucleus accumbens",
+                "VTA",
+                "Prefrontal cortex"
+            ],
+            "behavior": [
+                "Reward seeking",
+                "Learning rate",
+                "Motivation"
+            ],
+            "self_report": [
+                "BAS scales",
+                "Reward sensitivity",
+                "TEPS"
+            ],
+            "paradigms": [
+                "Reward learning tasks",
+                "Probabilistic learning",
+                "Effort-based decision-making"
+            ]
+        }
+    },
+    "Cognitive_Systems": {
+        "Working_Memory": {
+            "molecules": [
+                "Dopamine",
+                "Glutamate",
+                "GABA",
+                "Acetylcholine"
+            ],
+            "circuits": [
+                "DLPFC",
+                "Parietal cortex",
+                "Hippocampus"
+            ],
+            "behavior": [
+                "Information maintenance",
+                "Manipulation",
+                "Updating"
+            ],
+            "self_report": [
+                "Working memory complaints",
+                "Cognitive difficulties scale"
+            ],
+            "paradigms": [
+                "N-back task",
+                "Digit span",
+                "Operation span"
+            ]
+        },
+        "Attention": {
+            "molecules": [
+                "Norepinephrine",
+                "Acetylcholine",
+                "Dopamine"
+            ],
+            "circuits": [
+                "Frontoparietal network",
+                "ACC",
+                "Thalamus"
+            ],
+            "behavior": [
+                "Sustained attention",
+                "Selective attention",
+                "Divided attention"
+            ],
+            "self_report": [
+                "Attention problems scale",
+                "Cognitive failures questionnaire"
+            ],
+            "paradigms": [
+                "Continuous performance test",
+                "Attention network test",
+                "Visual search tasks"
+            ]
+        }
+    }
+  }
