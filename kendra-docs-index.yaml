@@ -1,0 +1,241 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: |
+  This CloudFormation template creates an Amazon Kendra index with a webcrawler datasource
+  for AWS Documentation (Kendra, Lex, and SageMaker).
+  Expected deployment time: ~45 minutes (30 min for index + 15 min for crawling)
+
+Parameters:
+  StackNamePrefix:
+    Type: String
+    Default: 'kendra-docs-v2'
+    Description: 'Prefix for resource names'
+  
+  KendraEdition:
+    Type: String
+    Default: 'DEVELOPER_EDITION'
+    AllowedValues:
+      - 'ENTERPRISE_EDITION'
+      - 'DEVELOPER_EDITION'
+    Description: 'DEVELOPER_EDITION is suitable for testing (Free Tier eligible)'
+  
+  Environment:
+    Type: String
+    Default: 'Production'
+    AllowedValues:
+      - 'Development'
+      - 'Staging'
+      - 'Production'
+    Description: 'Deployment environment'
+
+Resources:
+  KendraIndexRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: kendra.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Path: '/'
+      Policies:
+        - PolicyName: !Sub '${StackNamePrefix}-kendra-index-policy'
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'cloudwatch:PutMetricData'
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    'cloudwatch:namespace': 'Kendra'
+              - Effect: Allow
+                Action:
+                  - 'logs:DescribeLogGroups'
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:DescribeLogStreams'
+                  - 'logs:PutLogEvents'
+                Resource: 
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/kendra/*'
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/kendra/*:log-stream:*'
+              - Effect: Allow
+                Action:
+                  - 's3:GetObject'
+                  - 's3:PutObject'
+                  - 's3:DeleteObject'
+                Resource: !Sub 'arn:aws:s3:::*'
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  DocsKendraIndex:
+    Type: 'AWS::Kendra::Index'
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Retain
+    Properties:
+      Name: !Sub '${StackNamePrefix}-index'
+      Edition: !Ref KendraEdition
+      RoleArn: !GetAtt KendraIndexRole.Arn
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  KendraDSRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: kendra.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Path: '/'
+      Policies:
+        - PolicyName: !Sub '${StackNamePrefix}-ds-policy'
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Resource: !Sub 'arn:aws:kendra:${AWS::Region}:${AWS::AccountId}:index/${DocsKendraIndex.Id}'
+                Action:
+                  - 'kendra:BatchPutDocument'
+                  - 'kendra:BatchDeleteDocument'
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+  
+  KendraDocsDS:
+    Type: 'AWS::Kendra::DataSource'
+    Properties: 
+      DataSourceConfiguration: 
+        WebCrawlerConfiguration:
+          UrlInclusionPatterns:
+            - '.*https://docs.aws.amazon.com/lex/.*'
+            - '.*https://docs.aws.amazon.com/kendra/.*'
+            - '.*https://docs.aws.amazon.com/sagemaker/.*'
+          Urls:
+             SiteMapsConfiguration:
+               SiteMaps:
+                 - 'https://docs.aws.amazon.com/lex/latest/dg/sitemap.xml'
+                 - 'https://docs.aws.amazon.com/kendra/latest/dg/sitemap.xml'
+                 - 'https://docs.aws.amazon.com/sagemaker/latest/dg/sitemap.xml'
+      IndexId: !GetAtt DocsKendraIndex.Id
+      Name: !Sub '${StackNamePrefix}-docs-datasource'
+      RoleArn: !GetAtt KendraDSRole.Arn
+      Type: 'WEBCRAWLER'
+      Schedule: 'cron(0 0 * * ? *)'
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+    
+  DataSourceSyncLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Path: '/'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+      Policies:
+        - PolicyName: !Sub '${StackNamePrefix}-datasync-lambda-policy'
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Resource: !Sub 'arn:aws:kendra:${AWS::Region}:${AWS::AccountId}:index/${DocsKendraIndex.Id}*'
+                Action: 'kendra:*'
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+          
+  DataSourceSyncLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.lambda_handler
+      Runtime: python3.9
+      Role: !GetAtt DataSourceSyncLambdaRole.Arn
+      Timeout: 900
+      MemorySize: 1024
+      Code:
+        ZipFile: |
+          import json
+          import logging
+          import boto3
+          import cfnresponse
+          import os
+          
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+          
+          INDEX_ID = os.environ['INDEX_ID']
+          DS_ID = os.environ['DS_ID']
+          AWS_REGION = os.environ['AWS_REGION']
+          KENDRA = boto3.client('kendra')
+          
+          def start_data_source_sync(dsId, indexId):
+              logger.info(f"Starting data source sync: dsId={dsId}, indexId={indexId}")
+              try:
+                  resp = KENDRA.start_data_source_sync_job(Id=dsId, IndexId=indexId)
+                  logger.info(f"Sync job started successfully: {json.dumps(resp)}")
+                  return True
+              except Exception as e:
+                  logger.error(f"Error starting sync job: {str(e)}")
+                  return False
+          
+          def lambda_handler(event, context):
+              logger.info(f"Received event: {json.dumps(event)}")
+              try:
+                  if start_data_source_sync(DS_ID, INDEX_ID):
+                      status = cfnresponse.SUCCESS
+                  else:
+                      status = cfnresponse.FAILED
+              except Exception as e:
+                  logger.error(f"Handler error: {str(e)}")
+                  status = cfnresponse.FAILED
+              
+              cfnresponse.send(event, context, status, {}, None)
+              return status
+
+      Environment:
+        Variables:
+          INDEX_ID: !GetAtt DocsKendraIndex.Id
+          DS_ID: !GetAtt KendraDocsDS.Id
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+  
+  DataSourceSync:
+    Type: Custom::DataSourceSync
+    DependsOn: 
+      - DocsKendraIndex
+      - KendraDocsDS
+    Properties:
+      ServiceToken: !GetAtt DataSourceSyncLambda.Arn
+
+Outputs:
+  KendraIndexID:
+    Description: 'ID of the created Kendra Index'
+    Value: !GetAtt DocsKendraIndex.Id
+    Export:
+      Name: !Sub '${AWS::StackName}-IndexId'
+  
+  KendraIndexARN:
+    Description: 'ARN of the created Kendra Index'
+    Value: !Sub 'arn:aws:kendra:${AWS::Region}:${AWS::AccountId}:index/${DocsKendraIndex.Id}'
+    Export:
+      Name: !Sub '${AWS::StackName}-IndexArn'
+  
+  AWSRegion:
+    Description: 'AWS Region where resources were deployed'
+    Value: !Ref 'AWS::Region'
+    Export:
+      Name: !Sub '${AWS::StackName}-Region'
