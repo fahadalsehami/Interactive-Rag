@@ -15,66 +15,37 @@ CLAUDE_MODEL_ID = "anthropic.claude-3-sonnet-20240229-v1:0"
 def get_kendra_config() -> Optional[Dict[str, str]]:
     """
     Get Kendra configuration from CloudFormation stack.
-    
     Returns:
         Optional[Dict[str, str]]: Configuration with index_id and region
     """
     try:
         cfn = boto3.client('cloudformation')
-        
-        # List all stacks and find Kendra stack
-        paginator = cfn.get_paginator('list_stacks')
-        kendra_stack = None
-        
-        for page in paginator.paginate():
-            for stack in page['StackSummaries']:
-                if stack['StackStatus'] in ['CREATE_COMPLETE', 'UPDATE_COMPLETE']:
-                    if 'kendra' in stack['StackName'].lower():
-                        kendra_stack = stack['StackName']
-                        logger.info(f"Found Kendra stack: {kendra_stack}")
-                        break
-        
-        if not kendra_stack:
-            logger.warning("No active Kendra stack found")
-            return None
-            
-        # Get stack outputs from AWS
-        response = cfn.describe_stacks(StackName=kendra_stack)
-        
-        # Verify we have stack data
+
+        # Directly check for the specific Kendra stack
+        stack_name = 'kendra-docs-index'
+        response = cfn.describe_stacks(StackName=stack_name)
+
         if not response.get('Stacks'):
-            logger.error("No stack data found")
+            logger.error("No stack data found for kendra-docs-index")
             return None
-            
-        # Get stack outputs
+
+        # Get the outputs of the stack
         stack = response['Stacks'][0]
-        if 'Outputs' not in stack:
-            logger.error(f"No outputs found in stack {kendra_stack}")
-            return None
-            
-        # Process outputs
-        outputs = {}
-        for output in stack['Outputs']:
-            outputs[output['OutputKey']] = output['OutputValue']
-        
-        # Get current region
-        session = boto3.session.Session()
-        current_region = session.region_name
-        
-        # Create config with required AWS Kendra values
+        outputs = {o['OutputKey']: o['OutputValue'] for o in stack.get('Outputs', [])}
+
+        current_region = boto3.session.Session().region_name
         config = {
             'index_id': outputs.get('KendraIndexID'),
             'region': outputs.get('AWSRegion', current_region)
         }
-        
-        # Validate config
+
         if not config['index_id']:
             logger.error("No Kendra Index ID found in stack outputs")
             return None
-            
+
         logger.info(f"Retrieved Kendra config: {config}")
         return config
-        
+
     except ClientError as e:
         if e.response['Error']['Code'] == 'ValidationError':
             logger.info("Kendra stack not found - continuing without Kendra integration")
@@ -93,18 +64,18 @@ def get_model_params(
 ) -> Dict[str, Any]:
     """
     Get model parameters for Claude 3 Sonnet.
-    
+
     Args:
         model_id (str): Model identifier (defaults to Claude 3 Sonnet)
         temperature (float): Temperature parameter (0-1)
         max_tokens (int): Maximum tokens in response
-        
+
     Returns:
         Dict[str, Any]: Model parameters
     """
     if model_id != CLAUDE_MODEL_ID:
         logger.warning(f"Using non-standard model ID: {model_id}")
-        
+
     return {
         "model": model_id,
         "temperature": temperature,
@@ -119,7 +90,7 @@ def get_model_params(
 def validate_aws_credentials() -> bool:
     """
     Validate AWS credentials are properly configured.
-    
+
     Returns:
         bool: True if credentials are valid
     """
@@ -135,7 +106,7 @@ def validate_aws_credentials() -> bool:
 def get_bedrock_config() -> Dict[str, Any]:
     """
     Get AWS Bedrock configuration.
-    
+
     Returns:
         Dict[str, Any]: Bedrock configuration
     """

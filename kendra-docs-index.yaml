@@ -7,7 +7,7 @@ Description: |
 Parameters:
   StackNamePrefix:
     Type: String
-    Default: 'kendra-docs-v2'
+    Default: 'kendra-new-docs'
     Description: 'Prefix for resource names'
   
   KendraEdition:
