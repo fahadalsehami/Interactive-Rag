@@ -5,57 +5,55 @@ from typing import Dict, Any, Optional
 import boto3
 from botocore.exceptions import ClientError
 import logging
-import os
 
 logger = logging.getLogger(__name__)
 
 # Define constants
 CLAUDE_MODEL_ID = "anthropic.claude-3-sonnet-20240229-v1:0"
 
+
 def get_kendra_config() -> Optional[Dict[str, str]]:
     """
-    Get Kendra configuration from CloudFormation stack.
+    Retrieve Kendra configuration from the CloudFormation stack.
     Returns:
-        Optional[Dict[str, str]]: Configuration with index_id and region
+        Optional[Dict[str, str]]: Configuration with `index_id` and `region`.
     """
     try:
         cfn = boto3.client('cloudformation')
-
-        # Directly check for the specific Kendra stack
-        stack_name = 'kendra-docs-index'
+        stack_name = 'clinical-kendra-index'
         response = cfn.describe_stacks(StackName=stack_name)
 
-        if not response.get('Stacks'):
-            logger.error("No stack data found for kendra-docs-index")
+        # Ensure stack data exists
+        stacks = response.get('Stacks', [])
+        if not stacks:
+            logger.error("No stack data found for 'clinical-kendra-index'")
             return None
 
-        # Get the outputs of the stack
-        stack = response['Stacks'][0]
-        outputs = {o['OutputKey']: o['OutputValue'] for o in stack.get('Outputs', [])}
+        # Extract outputs
+        outputs = {o['OutputKey']: o['OutputValue'] for o in stacks[0].get('Outputs', [])}
+        kendra_index_id = outputs.get('KendraIndexID')
+        aws_region = outputs.get('AWSRegion', boto3.session.Session().region_name)
 
-        current_region = boto3.session.Session().region_name
-        config = {
-            'index_id': outputs.get('KendraIndexID'),
-            'region': outputs.get('AWSRegion', current_region)
-        }
-
-        if not config['index_id']:
+        if not kendra_index_id:
             logger.error("No Kendra Index ID found in stack outputs")
             return None
 
+        config = {'index_id': kendra_index_id, 'region': aws_region}
         logger.info(f"Retrieved Kendra config: {config}")
         return config
 
     except ClientError as e:
-        if e.response['Error']['Code'] == 'ValidationError':
+        error_code = e.response['Error'].get('Code')
+        if error_code == 'ValidationError':
             logger.info("Kendra stack not found - continuing without Kendra integration")
-            return None
         else:
-            logger.error(f"AWS error: {str(e)}")
-            return None
-    except Exception as e:
-        logger.error(f"Error getting Kendra config: {str(e)}")
+            logger.error(f"AWS error: {e}")
         return None
+
+    except Exception as e:
+        logger.error(f"Unexpected error retrieving Kendra config: {e}")
+        return None
+
 
 def get_model_params(
     model_id: str = CLAUDE_MODEL_ID,
@@ -66,12 +64,12 @@ def get_model_params(
     Get model parameters for Claude 3 Sonnet.
 
     Args:
-        model_id (str): Model identifier (defaults to Claude 3 Sonnet)
-        temperature (float): Temperature parameter (0-1)
-        max_tokens (int): Maximum tokens in response
+        model_id (str): Model identifier.
+        temperature (float): Temperature parameter (0-1).
+        max_tokens (int): Maximum tokens in response.
 
     Returns:
-        Dict[str, Any]: Model parameters
+        Dict[str, Any]: Model parameters.
     """
     if model_id != CLAUDE_MODEL_ID:
         logger.warning(f"Using non-standard model ID: {model_id}")
@@ -87,12 +85,13 @@ def get_model_params(
         "messages": []
     }
 
+
 def validate_aws_credentials() -> bool:
     """
     Validate AWS credentials are properly configured.
 
     Returns:
-        bool: True if credentials are valid
+        bool: True if credentials are valid, False otherwise.
     """
     try:
         sts = boto3.client('sts')
@@ -100,15 +99,16 @@ def validate_aws_credentials() -> bool:
         logger.info(f"AWS credentials valid for account: {identity['Account']}")
         return True
     except Exception as e:
-        logger.error(f"AWS credentials validation failed: {str(e)}")
+        logger.error(f"AWS credentials validation failed: {e}")
         return False
+
 
 def get_bedrock_config() -> Dict[str, Any]:
     """
     Get AWS Bedrock configuration.
 
     Returns:
-        Dict[str, Any]: Bedrock configuration
+        Dict[str, Any]: Bedrock configuration.
     """
     return {
         "model_id": CLAUDE_MODEL_ID,

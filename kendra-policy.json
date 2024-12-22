@@ -1,0 +1,21 @@
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": [
+                "cloudformation:*",
+                "kendra:*",
+                "iam:CreateRole",
+                "iam:DeleteRole",
+                "iam:GetRole",
+                "iam:PutRolePolicy",
+                "iam:PassRole",
+                "cloudwatch:PutMetricData",
+                "logs:*",
+                "s3:*"
+            ],
+            "Resource": "*"
+        }
+    ]
+}

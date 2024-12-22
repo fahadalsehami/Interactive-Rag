@@ -1,0 +1,125 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: |
+  Construct an Amazon Kendra index with a webcrawler datasource for AWS (Kendra, Lex, SageMaker)
+
+Parameters:
+  StackNamePrefix:
+    Type: String
+    Default: 'clinical-kendra-stack-$(date +%Y%m%d)'
+    Description: 'Prefix for resource names'
+
+  KendraEdition:
+    Type: String
+    Default: 'DEVELOPER_EDITION'
+    AllowedValues:
+      - 'ENTERPRISE_EDITION'
+      - 'DEVELOPER_EDITION'
+    Description: 'DEVELOPER_EDITION is suitable for testing (Free Tier eligible)'
+
+  Environment:
+    Type: String
+    Default: 'Production'
+    AllowedValues:
+      - 'Development'
+      - 'Staging'
+      - 'Production'
+    Description: 'Deployment environment'
+
+  DataSourceSyncSchedule:
+    Type: String
+    Default: 'cron(0 0 * * ? *)'
+    Description: 'CRON expression for data source sync schedule'
+
+Resources:
+  KendraIndexRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: kendra.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Path: '/'
+      Policies:
+        - PolicyName: !Sub '${StackNamePrefix}-kendra-policy'
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'cloudwatch:PutMetricData'
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - 'logs:*'
+                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/kendra/*:*'
+              - Effect: Allow
+                Action:
+                  - 's3:GetObject'
+                Resource: !Sub 'arn:aws:s3:::${StackNamePrefix}-bucket/*'
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  DocsKendraIndex:
+    Type: 'AWS::Kendra::Index'
+    Properties:
+      Name: !Sub '${StackNamePrefix}-index'
+      Edition: !Ref KendraEdition
+      RoleArn: !GetAtt KendraIndexRole.Arn
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  KendraDSRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: kendra.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: !Sub '${StackNamePrefix}-ds-policy'
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action: 
+                  - 'kendra:BatchPutDocument'
+                  - 'kendra:BatchDeleteDocument'
+                Resource: !Sub 'arn:aws:kendra:${AWS::Region}:${AWS::AccountId}:index/${DocsKendraIndex.Id}'
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  KendraDocsDS:
+    Type: 'AWS::Kendra::DataSource'
+    Properties: 
+      DataSourceConfiguration: 
+        WebCrawlerConfiguration:
+          UrlInclusionPatterns:
+            - '.*https://docs.aws.amazon.com/.*'
+          Urls:
+             SiteMapsConfiguration:
+               SiteMaps:
+                 - 'https://docs.aws.amazon.com/sitemap.xml'
+      IndexId: !GetAtt DocsKendraIndex.Id
+      Name: !Sub '${StackNamePrefix}-docs-datasource'
+      RoleArn: !GetAtt KendraDSRole.Arn
+      Type: 'WEBCRAWLER'
+      Schedule: !Ref DataSourceSyncSchedule
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+Outputs:
+  KendraIndexID:
+    Description: 'ID of the created Kendra Index'
+    Value: !GetAtt DocsKendraIndex.Id
+    Export:
+      Name: !Sub '${AWS::StackName}-IndexId'
