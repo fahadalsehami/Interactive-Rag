@@ -11,7 +11,6 @@ logger = logging.getLogger(__name__)
 # Define constants
 CLAUDE_MODEL_ID = "anthropic.claude-3-sonnet-20240229-v1:0"
 
-
 def get_kendra_config() -> Optional[Dict[str, str]]:
     """
     Retrieve Kendra configuration from the CloudFormation stack.
@@ -117,7 +116,6 @@ def validate_kendra_config(kendra_config: Optional[Dict[str, str]]) -> bool:
         logger.error(f"Unexpected error retrieving Kendra config: {e}")
         return None
 
-
 def get_model_params(
     model_id: str = CLAUDE_MODEL_ID,
     temperature: float = 0.9,
@@ -148,7 +146,6 @@ def get_model_params(
         "messages": []
     }
 
-
 def validate_aws_credentials() -> bool:
     """
     Validate AWS credentials are properly configured.
@@ -164,7 +161,6 @@ def validate_aws_credentials() -> bool:
     except Exception as e:
         logger.error(f"AWS credentials validation failed: {e}")
         return False
-
 
 def get_bedrock_config() -> Dict[str, Any]:
     """
