@@ -1,12 +1,14 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: |
-  Construct an Amazon Kendra index with a webcrawler datasource for AWS (Kendra, Lex, SageMaker)
+  Amazon Kendra index with a web crawler data source for the NIMH Research Domain Criteria (RDoC) pages,
+  used as the retrieval layer of the Interactive-Rag clinical analysis app.
 
 Parameters:
   StackNamePrefix:
     Type: String
-    Default: 'clinical-kendra-stack-$(date +%Y%m%d)'
-    Description: 'Prefix for resource names'
+    Default: 'clinical-rag'
+    AllowedPattern: '^[a-zA-Z0-9][a-zA-Z0-9-]{0,40}$'
+    Description: 'Prefix for resource names: letters, numbers and hyphens'
 
   KendraEdition:
     Type: String
@@ -18,7 +20,7 @@ Parameters:
 
   Environment:
     Type: String
-    Default: 'Production'
+    Default: 'Development'
     AllowedValues:
       - 'Development'
       - 'Staging'
@@ -51,14 +53,20 @@ Resources:
                 Action:
                   - 'cloudwatch:PutMetricData'
                 Resource: '*'
+                Condition:
+                  StringEquals:
+                    'cloudwatch:namespace': 'AWS/Kendra'
               - Effect: Allow
                 Action:
-                  - 'logs:*'
-                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/kendra/*:*'
+                  - 'logs:DescribeLogGroups'
+                Resource: '*'
               - Effect: Allow
                 Action:
-                  - 's3:GetObject'
-                Resource: !Sub 'arn:aws:s3:::${StackNamePrefix}-bucket/*'
+                  - 'logs:CreateLogGroup'
+                  - 'logs:DescribeLogStreams'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/kendra/*'
       Tags:
         - Key: Environment
           Value: !Ref Environment
@@ -89,7 +97,7 @@ Resources:
             Version: 2012-10-17
             Statement:
               - Effect: Allow
-                Action: 
+                Action:
                   - 'kendra:BatchPutDocument'
                   - 'kendra:BatchDeleteDocument'
                 Resource: !Sub 'arn:aws:kendra:${AWS::Region}:${AWS::AccountId}:index/${DocsKendraIndex.Id}'
@@ -97,19 +105,22 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
-  KendraDocsDS:
+  RDoCDataSource:
     Type: 'AWS::Kendra::DataSource'
-    Properties: 
-      DataSourceConfiguration: 
+    Properties:
+      DataSourceConfiguration:
         WebCrawlerConfiguration:
-          UrlInclusionPatterns:
-            - '.*https://docs.aws.amazon.com/.*'
           Urls:
-             SiteMapsConfiguration:
-               SiteMaps:
-                 - 'https://docs.aws.amazon.com/sitemap.xml'
+            SeedUrlConfiguration:
+              SeedUrls:
+                - 'https://www.nimh.nih.gov/research/research-funded-by-nimh/rdoc'
+              WebCrawlerMode: 'HOST_ONLY'
+          UrlInclusionPatterns:
+            - '.*nimh\.nih\.gov/.*rdoc.*'
+          CrawlDepth: 3
+          MaxLinksPerPage: 100
       IndexId: !GetAtt DocsKendraIndex.Id
-      Name: !Sub '${StackNamePrefix}-docs-datasource'
+      Name: !Sub '${StackNamePrefix}-rdoc-datasource'
       RoleArn: !GetAtt KendraDSRole.Arn
       Type: 'WEBCRAWLER'
       Schedule: !Ref DataSourceSyncSchedule

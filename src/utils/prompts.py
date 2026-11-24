@@ -1,7 +1,14 @@
 """
-prompt.py: System prompts for the Clinical Analysis System
+prompts.py: Prompts for the Clinical Analysis System
 """
-from langchain.prompts import PromptTemplate
+from langchain_core.prompts import PromptTemplate
+
+SYSTEM_PROMPT = """You support a clinician who is working through a clinical presentation with the \
+NIMH Research Domain Criteria (RDoC) framework. Work only from the clinical information, the RDoC \
+matches and the retrieved passages you are given. When you use a retrieved passage, cite it by its \
+number, as [1], and say plainly when the passages do not cover a point. Do not give a diagnosis or a \
+treatment plan: describe the constructs, units of analysis and assessments the clinician could consider."""
+
 
 def create_analysis_prompt() -> PromptTemplate:
     """

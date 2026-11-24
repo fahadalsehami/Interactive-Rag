@@ -2,26 +2,62 @@
 rdoc_analyzer.py: RDoC Matrix Analysis Module for Clinical Assessment
 """
 from typing import Dict, List, Any, Optional
+import re
 import boto3
+from botocore.exceptions import BotoCoreError, ClientError
 import logging
 import pandas as pd
 
 logger = logging.getLogger(__name__)
 
+# Symptom keywords that point to RDoC domains or constructs
+KEYWORD_TARGETS = {
+    'depression': ['negative valence', 'reward'],
+    'anxiety': ['negative valence', 'acute threat'],
+    'adhd': ['attention', 'working memory'],
+    'headache': ['negative valence', 'cognitive'],
+}
+
+
+def _mentions(text: str, term: str) -> bool:
+    """True if term appears in text as a whole word or phrase (case-insensitive)."""
+    return re.search(r'\b' + re.escape(term.lower()) + r'\b', text) is not None
+
+
 class RDoCAnalyzer:
-    def __init__(self, rdoc_matrix: Dict[str, Any], kendra_index_id: Optional[str] = None, region: Optional[str] = None):
-        """Initialize RDoC Analyzer with matrix data and optional Kendra config."""
+    def __init__(
+        self,
+        rdoc_matrix: Dict[str, Any],
+        kendra_index_id: Optional[str] = None,
+        region: Optional[str] = None,
+        knowledge_base_id: Optional[str] = None
+    ):
+        """Initialize RDoC Analyzer with matrix data and an optional retrieval source."""
         self.matrix = rdoc_matrix
-        
-        # Initialize Kendra if configured
+
+        # Initialize a Bedrock Knowledge Base or a Kendra index if configured
+        self.knowledge_base_client = None
+        self.knowledge_base_id = knowledge_base_id
         self.kendra_client = None
         self.kendra_index_id = kendra_index_id
-        if kendra_index_id and region:
-            try:
+        try:
+            if knowledge_base_id and region:
+                self.knowledge_base_client = boto3.client('bedrock-agent-runtime', region_name=region)
+                logger.info("Bedrock Knowledge Base client initialized successfully")
+            elif kendra_index_id and region:
                 self.kendra_client = boto3.client('kendra', region_name=region)
                 logger.info("Kendra client initialized successfully")
-            except Exception as e:
-                logger.error(f"Failed to initialize Kendra client: {str(e)}")
+        except (BotoCoreError, ClientError) as e:
+            logger.error(f"Failed to initialize the retrieval client: {str(e)}")
+
+    @property
+    def retrieval_source(self) -> Optional[str]:
+        """Name of the configured retrieval source, or None."""
+        if self.knowledge_base_client:
+            return "Amazon Bedrock Knowledge Base"
+        if self.kendra_client:
+            return "Amazon Kendra"
+        return None
 
     def analyze_symptoms(self, symptoms: List[str]) -> Dict[str, Any]:
         """Analyze symptoms and map to RDoC domains."""
@@ -29,25 +65,25 @@ class RDoCAnalyzer:
             analysis = {
                 domain: [] for domain in self.matrix.keys()
             }
-            
+
             for symptom in symptoms:
                 # Process each domain
                 for domain, constructs in self.matrix.items():
-                    matches = self._match_symptom_to_domain(symptom, constructs)
-                    if matches:
-                        analysis[domain].extend(matches)
-            
+                    for match in self._match_symptom_to_domain(symptom, domain, constructs):
+                        if match['construct'] not in {m['construct'] for m in analysis[domain]}:
+                            analysis[domain].append(match)
+
             return analysis
-            
+
         except Exception as e:
             logger.error(f"Error in symptom analysis: {str(e)}")
             return {}
 
-    def _match_symptom_to_domain(self, symptom: str, constructs: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def _match_symptom_to_domain(self, symptom: str, domain: str, constructs: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Match symptoms to specific RDoC constructs."""
         matches = []
         for construct_name, data in constructs.items():
-            if self._is_relevant(symptom, construct_name, data):
+            if self._is_relevant(symptom, domain, construct_name, data):
                 matches.append({
                     'construct': construct_name,
                     'units': self._get_relevant_units(data),
@@ -56,36 +92,29 @@ class RDoCAnalyzer:
                 })
         return matches
 
-    def _is_relevant(self, symptom: str, construct: str, data: Dict[str, Any]) -> bool:
+    def _is_relevant(self, symptom: str, domain: str, construct: str, data: Dict[str, Any]) -> bool:
         """Determine if a construct is relevant to a symptom."""
         symptom_lower = symptom.lower()
         construct_lower = construct.lower().replace('_', ' ')
-        
+        target = f"{domain} {construct}".lower().replace('_', ' ')
+
         # Direct construct match
-        if construct_lower in symptom_lower:
+        if _mentions(symptom_lower, construct_lower):
             return True
-            
+
         # Check molecular markers
-        if 'molecules' in data and any(mol.lower() in symptom_lower for mol in data['molecules']):
+        if any(_mentions(symptom_lower, mol) for mol in data.get('molecules', [])):
             return True
-            
+
         # Check behaviors
-        if 'behavior' in data and any(beh.lower() in symptom_lower for beh in data['behavior']):
+        if any(_mentions(symptom_lower, beh) for beh in data.get('behavior', [])):
             return True
-            
-        # Check domains
-        domains = {
-            'depression': ['negative_valence', 'reward'],
-            'anxiety': ['negative_valence', 'acute_threat'],
-            'adhd': ['attention', 'working_memory'],
-            'headache': ['negative_valence', 'cognitive'],
-        }
-        
-        for keyword, related_domains in domains.items():
-            if keyword in symptom_lower:
-                return any(domain in construct_lower for domain in related_domains)
-        
-        return False
+
+        # Check symptom keywords against the domain and construct names
+        return any(
+            _mentions(symptom_lower, keyword) and any(term in target for term in terms)
+            for keyword, terms in KEYWORD_TARGETS.items()
+        )
 
     def _get_relevant_units(self, data: Dict[str, Any]) -> Dict[str, List[str]]:
         """Extract relevant units of analysis."""
@@ -107,21 +136,21 @@ class RDoCAnalyzer:
     def generate_clinical_recommendations(self, analysis: Dict[str, Any]) -> pd.DataFrame:
         """Generate clinical recommendations based on analysis."""
         recommendations = []
-        
+
         try:
             for domain, findings in analysis.items():
                 if findings:
                     for finding in findings:
                         recommendations.append({
-                            'Domain': domain,
-                            'Construct': finding['construct'],
+                            'Domain': domain.replace('_', ' '),
+                            'Construct': finding['construct'].replace('_', ' '),
                             'Units_of_Analysis': self._format_units(finding.get('units', {})),
                             'Recommended_Tests': ', '.join(finding.get('tests', [])),
                             'Relevance': finding.get('relevance', 'Direct Match')
                         })
-            
+
             return pd.DataFrame(recommendations)
-            
+
         except Exception as e:
             logger.error(f"Error generating recommendations: {str(e)}")
             return pd.DataFrame()
@@ -130,28 +159,62 @@ class RDoCAnalyzer:
         """Format units for display."""
         return '; '.join(f"{k}: {', '.join(v)}" for k, v in units.items() if v)
 
-    def _search_kendra(self, query: str) -> Optional[Dict[str, Any]]:
-        """Search Kendra index if available."""
-        if not self.kendra_client or not self.kendra_index_id:
-            return None
-            
+    def retrieve(self, query: str, top_k: int = 5) -> List[Dict[str, str]]:
+        """
+        Retrieve passages for retrieval-augmented generation from the configured source.
+
+        Returns a list of passages with `title`, `excerpt` and `uri`, or an empty list when no
+        source is configured or the call fails.
+        """
+        if self.knowledge_base_client:
+            return self._retrieve_from_knowledge_base(query)
+        if self.kendra_client:
+            return self._retrieve_from_kendra(query, top_k)
+        return []
+
+    def _retrieve_from_knowledge_base(self, query: str) -> List[Dict[str, str]]:
+        """Retrieve passages from an Amazon Bedrock Knowledge Base (its default number of results)."""
         try:
-            response = self.kendra_client.query(
-                IndexId=self.kendra_index_id,
-                QueryText=query
+            response = self.knowledge_base_client.retrieve(
+                knowledgeBaseId=self.knowledge_base_id,
+                retrievalQuery={'text': query[:1000]}
             )
-            
-            results = []
-            for item in response.get('ResultItems', []):
-                if item['Type'] == 'DOCUMENT':
-                    results.append({
-                        'title': item.get('DocumentTitle', {}).get('Text', ''),
-                        'excerpt': item.get('DocumentExcerpt', {}).get('Text', ''),
-                        'confidence': item.get('ScoreAttributes', {}).get('ScoreConfidence', '')
-                    })
-            
-            return {'kendra_results': results} if results else None
-            
-        except Exception as e:
-            logger.error(f"Kendra search error: {str(e)}")
-            return None
+        except (BotoCoreError, ClientError) as e:
+            logger.error(f"Knowledge Base retrieval error: {str(e)}")
+            return []
+
+        passages = []
+        for result in response.get('retrievalResults', []):
+            location = result.get('location', {})
+            uri = (
+                location.get('webLocation', {}).get('url')
+                or location.get('s3Location', {}).get('uri')
+                or ''
+            )
+            passages.append({
+                'title': uri.rstrip('/').rsplit('/', 1)[-1].replace('-', ' ') if uri else '',
+                'excerpt': result.get('content', {}).get('text', ''),
+                'uri': uri
+            })
+        return passages
+
+    def _retrieve_from_kendra(self, query: str, top_k: int) -> List[Dict[str, str]]:
+        """Retrieve passages from an Amazon Kendra index. Kendra reads the first 30 words of the query."""
+        try:
+            response = self.kendra_client.retrieve(
+                IndexId=self.kendra_index_id,
+                QueryText=query[:1000],
+                PageSize=top_k
+            )
+        except (BotoCoreError, ClientError) as e:
+            logger.error(f"Kendra retrieval error: {str(e)}")
+            return []
+
+        return [
+            {
+                'title': item.get('DocumentTitle', ''),
+                'excerpt': item.get('Content', ''),
+                'uri': item.get('DocumentURI', '')
+            }
+            for item in response.get('ResultItems', [])
+        ]
