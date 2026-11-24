@@ -1,176 +1,131 @@
 """
-model.py: Utilities for model parameters configuration and Kendra integration
+model.py: AWS configuration, Amazon Kendra lookup and Claude on Amazon Bedrock
 """
-from typing import Dict, Any, Optional
-import boto3
-from botocore.exceptions import ClientError
 import logging
+import os
+from typing import Dict, Optional
+
+import boto3
+from botocore.exceptions import BotoCoreError, ClientError
 
 logger = logging.getLogger(__name__)
 
-# Define constants
-CLAUDE_MODEL_ID = "anthropic.claude-3-sonnet-20240229-v1:0"
+# Claude on Amazon Bedrock. Set BEDROCK_MODEL_ID to use another model ID or inference profile
+# that your account can invoke, for example us.anthropic.claude-sonnet-4-6 to keep inference in the US.
+DEFAULT_MODEL_ID = "global.anthropic.claude-sonnet-4-6"
 
-def get_kendra_config() -> Optional[Dict[str, str]]:
-    """
-    Retrieve Kendra configuration from the CloudFormation stack.
-    Returns:
-        Optional[Dict[str, str]]: Configuration with `index_id` and `region`.
-    """
-    try:
-        import os
-        # Dynamically fetch stack name and region
-        stack_name = os.getenv('KENDRA_STACK_NAME', 'clinical-kendra-stack-20241221')
-        region_name = os.getenv('AWS_REGION', boto3.session.Session().region_name)
+# Name of the CloudFormation stack created from kendra-template.yaml
+DEFAULT_STACK_NAME = "clinical-rag-kendra"
 
-        cfn = boto3.client('cloudformation', region_name=region_name)
-        response = cfn.describe_stacks(StackName=stack_name)
+DEFAULT_REGION = "us-east-1"
 
-        # Ensure stack data exists
-        stacks = response.get('Stacks', [])
-        if not stacks:
-            logger.error(f"No stack data found for '{stack_name}'")
-            return None
 
-        # Extract outputs
-        outputs = {o['OutputKey']: o['OutputValue'] for o in stacks[0].get('Outputs', [])}
-        kendra_index_id = outputs.get('KendraIndexID')
+def model_id() -> str:
+    """Return the Bedrock model ID or inference profile ID to call."""
+    return os.getenv("BEDROCK_MODEL_ID") or DEFAULT_MODEL_ID
 
-        if not kendra_index_id:
-            logger.error("No Kendra Index ID found in stack outputs")
-            return None
 
-        config = {'index_id': kendra_index_id, 'region': region_name}
-        logger.info(f"Retrieved Kendra config: {config}")
-        return config
+def aws_region() -> str:
+    """Return the AWS Region from AWS_REGION, then the AWS configuration, then the default."""
+    return os.getenv("AWS_REGION") or boto3.session.Session().region_name or DEFAULT_REGION
 
-    except ClientError as e:
-        error_code = e.response['Error'].get('Code')
-        if error_code == 'ValidationError':
-            logger.info(f"Kendra stack '{stack_name}' not found - continuing without Kendra integration")
-        else:
-            logger.error(f"AWS error: {e}")
-        return None
-
-    except Exception as e:
-        logger.error(f"Unexpected error retrieving Kendra config: {e}")
-        return None
-
-def validate_kendra_config(kendra_config: Optional[Dict[str, str]]) -> bool:
-    """
-    Validate if the retrieved Kendra configuration is complete.
-
-    Args:
-        kendra_config (Optional[Dict[str, str]]): The Kendra configuration to validate.
-
-    Returns:
-        bool: True if valid, False otherwise.
-    """
-    if not kendra_config:
-        logger.error("Kendra configuration is missing or incomplete.")
-        return False
-    required_keys = ["index_id", "region"]
-    for key in required_keys:
-        if key not in kendra_config:
-            logger.error(f"Kendra configuration missing required key: {key}")
-            return False
-    return True
-    """
-    Retrieve Kendra configuration from the CloudFormation stack.
-    Returns:
-        Optional[Dict[str, str]]: Configuration with `index_id` and `region`.
-    """
-    try:
-        cfn = boto3.client('cloudformation')
-        stack_name = 'clinical-kendra-index'
-        response = cfn.describe_stacks(StackName=stack_name)
-
-        # Ensure stack data exists
-        stacks = response.get('Stacks', [])
-        if not stacks:
-            logger.error("No stack data found for 'clinical-kendra-index'")
-            return None
-
-        # Extract outputs
-        outputs = {o['OutputKey']: o['OutputValue'] for o in stacks[0].get('Outputs', [])}
-        kendra_index_id = outputs.get('KendraIndexID')
-        aws_region = outputs.get('AWSRegion', boto3.session.Session().region_name)
-
-        if not kendra_index_id:
-            logger.error("No Kendra Index ID found in stack outputs")
-            return None
-
-        config = {'index_id': kendra_index_id, 'region': aws_region}
-        logger.info(f"Retrieved Kendra config: {config}")
-        return config
-
-    except ClientError as e:
-        error_code = e.response['Error'].get('Code')
-        if error_code == 'ValidationError':
-            logger.info("Kendra stack not found - continuing without Kendra integration")
-        else:
-            logger.error(f"AWS error: {e}")
-        return None
-
-    except Exception as e:
-        logger.error(f"Unexpected error retrieving Kendra config: {e}")
-        return None
-
-def get_model_params(
-    model_id: str = CLAUDE_MODEL_ID,
-    temperature: float = 0.9,
-    max_tokens: int = 4096
-) -> Dict[str, Any]:
-    """
-    Get model parameters for Claude 3 Sonnet.
-
-    Args:
-        model_id (str): Model identifier.
-        temperature (float): Temperature parameter (0-1).
-        max_tokens (int): Maximum tokens in response.
-
-    Returns:
-        Dict[str, Any]: Model parameters.
-    """
-    if model_id != CLAUDE_MODEL_ID:
-        logger.warning(f"Using non-standard model ID: {model_id}")
-
-    return {
-        "model": model_id,
-        "temperature": temperature,
-        "max_tokens": max_tokens,
-        "top_p": 0.9,
-        "frequency_penalty": 0,
-        "presence_penalty": 0,
-        "anthropic_version": "bedrock-2024-02-29",
-        "messages": []
-    }
 
 def validate_aws_credentials() -> bool:
     """
-    Validate AWS credentials are properly configured.
+    Check that AWS credentials are configured and valid.
 
     Returns:
         bool: True if credentials are valid, False otherwise.
     """
+    if boto3.session.Session().get_credentials() is None:
+        logger.info("No AWS credentials found - running on the RDoC matrix alone")
+        return False
     try:
-        sts = boto3.client('sts')
-        identity = sts.get_caller_identity()
+        identity = boto3.client("sts", region_name=aws_region()).get_caller_identity()
         logger.info(f"AWS credentials valid for account: {identity['Account']}")
         return True
-    except Exception as e:
-        logger.error(f"AWS credentials validation failed: {e}")
+    except (BotoCoreError, ClientError) as e:
+        logger.warning(f"AWS credentials could not be validated: {e}")
         return False
 
-def get_bedrock_config() -> Dict[str, Any]:
+
+def get_knowledge_base_config() -> Optional[Dict[str, str]]:
     """
-    Get AWS Bedrock configuration.
+    Find the Amazon Bedrock Knowledge Base to retrieve from, set by KNOWLEDGE_BASE_ID.
 
     Returns:
-        Dict[str, Any]: Bedrock configuration.
+        Optional[Dict[str, str]]: Configuration with `knowledge_base_id` and `region`, or None.
     """
-    return {
-        "model_id": CLAUDE_MODEL_ID,
-        "provider": "anthropic",
-        "service_name": "bedrock"
-    }
+    knowledge_base_id = os.getenv("KNOWLEDGE_BASE_ID")
+    if not knowledge_base_id:
+        return None
+    region = aws_region()
+    logger.info(f"Using Bedrock Knowledge Base {knowledge_base_id} in {region}")
+    return {"knowledge_base_id": knowledge_base_id, "region": region}
+
+
+def get_kendra_config() -> Optional[Dict[str, str]]:
+    """
+    Find the Kendra index to retrieve from.
+
+    Uses KENDRA_INDEX_ID when it is set; otherwise reads the KendraIndexID output of the
+    CloudFormation stack named by KENDRA_STACK_NAME.
+
+    Returns:
+        Optional[Dict[str, str]]: Configuration with `index_id` and `region`, or None.
+    """
+    region = aws_region()
+    index_id = os.getenv("KENDRA_INDEX_ID")
+    if index_id:
+        return {"index_id": index_id, "region": region}
+
+    stack_name = os.getenv("KENDRA_STACK_NAME") or DEFAULT_STACK_NAME
+    try:
+        cfn = boto3.client("cloudformation", region_name=region)
+        stacks = cfn.describe_stacks(StackName=stack_name).get("Stacks", [])
+    except ClientError as e:
+        if e.response["Error"].get("Code") == "ValidationError":
+            logger.info(f"Kendra stack '{stack_name}' not found - continuing without retrieval")
+        else:
+            logger.error(f"AWS error: {e}")
+        return None
+    except BotoCoreError as e:
+        logger.error(f"AWS error: {e}")
+        return None
+
+    if not stacks:
+        logger.error(f"No stack data found for '{stack_name}'")
+        return None
+
+    outputs = {o["OutputKey"]: o["OutputValue"] for o in stacks[0].get("Outputs", [])}
+    index_id = outputs.get("KendraIndexID")
+    if not index_id:
+        logger.error("No Kendra Index ID found in stack outputs")
+        return None
+
+    logger.info(f"Using Kendra index {index_id} in {region}")
+    return {"index_id": index_id, "region": region}
+
+
+def generate_text(prompt: str, system: str, max_tokens: int = 1500, temperature: float = 0.2) -> str:
+    """
+    Send one prompt to Claude on Amazon Bedrock with the Converse API.
+
+    Args:
+        prompt (str): User message.
+        system (str): System prompt.
+        max_tokens (int): Maximum tokens in the reply.
+        temperature (float): Sampling temperature (0-1).
+
+    Returns:
+        str: Text of the reply.
+    """
+    client = boto3.client("bedrock-runtime", region_name=aws_region())
+    response = client.converse(
+        modelId=model_id(),
+        system=[{"text": system}],
+        messages=[{"role": "user", "content": [{"text": prompt}]}],
+        inferenceConfig={"maxTokens": max_tokens, "temperature": temperature},
+    )
+    content = response["output"]["message"]["content"]
+    return "".join(block.get("text", "") for block in content).strip()
